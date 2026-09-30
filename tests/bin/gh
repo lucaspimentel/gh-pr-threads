@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Test stub for gh. Records each invocation's argv to $STUB_LOG (one argv per
+# invocation, JSON array) and emits fixture responses keyed on markers in the
+# query. Set STUB_FAIL=1 to make every call fail, STUB_FAIL_GRAPHQL=1 to return
+# a 200 response with GraphQL errors.
+set -u
+
+STUB_LOG="${STUB_LOG:?STUB_LOG must be set}"
+printf '%s\0' "$@" | jq -Rcs 'split("\u0000")[:-1]' >>"$STUB_LOG"
+
+if [ "${STUB_FAIL:-0}" = "1" ]; then
+  echo "stub gh: simulated failure" >&2
+  exit 1
+fi
+
+args_json="$(printf '%s\0' "$@" | jq -Rcs 'split("\u0000")[:-1]')"
+
+if jq -e 'any(.[]; contains("resolveReviewThread"))' >/dev/null 2>&1 <<<"$args_json"; then
+  echo '{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_thread1","isResolved":true}}}}'
+  exit 0
+fi
+
+if jq -e 'any(.[]; contains("PullRequestReviewComment"))' >/dev/null 2>&1 <<<"$args_json"; then
+  echo '{"data":{"node":{"databaseId":4242}}}'
+  exit 0
+fi
+
+if jq -e 'any(.[]; contains("reviewThreads"))' >/dev/null 2>&1 <<<"$args_json"; then
+  if [ "${STUB_GRAPHQL_ERRORS:-0}" = "1" ]; then
+    echo '{"data": null, "errors": [{"message": "Could not resolve to a PullRequest"}]}'
+  else
+    cat "$STUB_LIST_FIXTURE"
+  fi
+  exit 0
+fi
+
+if jq -e 'any(.[]; test("pulls/.*/comments$"))' >/dev/null 2>&1 <<<"$args_json"; then
+  if [ "${STUB_POST_FAIL:-0}" = "1" ]; then
+    echo "stub gh: simulated post failure" >&2
+    exit 1
+  fi
+  echo '{"id": 9001, "node_id": "PRRC_new1", "html_url": "https://github.com/o/r/pull/1#discussioncomment-9001"}'
+  exit 0
+fi
+
+echo "stub gh: no fixture for args: $args_json" >&2
+exit 1

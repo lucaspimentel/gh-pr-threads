@@ -1,0 +1,81 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "url": "https://github.com/o/r/pull/7",
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_thread1",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "src/a.cs",
+              "line": 42,
+              "startLine": 40,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_c1",
+                    "databaseId": 111,
+                    "author": { "login": "alice", "__typename": "User" },
+                    "body": "Consider null check here",
+                    "createdAt": "2026-09-30T10:00:00Z",
+                    "url": "https://github.com/o/r/pull/7#discussioncomment-111"
+                  },
+                  {
+                    "id": "PRRC_c2",
+                    "databaseId": 112,
+                    "author": { "login": "coderabbit", "__typename": "Bot" },
+                    "body": "Suggested fix: add guard",
+                    "createdAt": "2026-09-30T10:05:00Z",
+                    "url": "https://github.com/o/r/pull/7#discussioncomment-112"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_thread2",
+              "isResolved": true,
+              "isOutdated": false,
+              "path": "src/b.cs",
+              "line": 10,
+              "startLine": null,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_c3",
+                    "databaseId": 113,
+                    "author": { "login": "bob", "__typename": "User" },
+                    "body": "Already addressed",
+                    "createdAt": "2026-09-30T09:00:00Z",
+                    "url": "https://github.com/o/r/pull/7#discussioncomment-113"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_thread3",
+              "isResolved": false,
+              "isOutdated": true,
+              "path": "src/c.cs",
+              "line": null,
+              "startLine": null,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_c4",
+                    "databaseId": 114,
+                    "author": null,
+                    "body": "Comment on deleted line",
+                    "createdAt": "2026-09-30T08:00:00Z",
+                    "url": "https://github.com/o/r/pull/7#discussioncomment-114"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

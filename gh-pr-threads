@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# gh-pr-threads: a gh extension for PR review threads.
+#
+# Wraps the three gh api calls pi's address-pr-comments skill needs so they can
+# be allow-listed narrowly by permission systems (e.g. pi-tool-permissions)
+# instead of allowing raw `gh api`:
+#
+#   gh pr-threads list   <owner> <repo> <pr> [--all]
+#   gh pr-threads reply  <owner> <repo> <pr> --in-reply-to <id> (--body <text> | --body-file <path>) [--resolve-thread <id>]
+#   gh pr-threads resolve <thread-id>
+#
+# `list` fetches review threads (unresolved only unless --all) and includes the
+# numeric databaseId of every comment, so callers never need the PRRC_ node-id
+# lookup dance. `reply` also accepts a PRRC_ id and converts it internally.
+# `resolve` resolves a thread by its PRRT_ GraphQL node id.
+set -euo pipefail
+
+# shellcheck disable=SC2016  # GraphQL $variables are literal, not shell expansions
+QUERY_REVIEW_THREADS='
+query($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      url
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          startLine
+          comments(first: 50) {
+            nodes {
+              id
+              databaseId
+              author { login __typename }
+              body
+              createdAt
+              url
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+
+# shellcheck disable=SC2016  # GraphQL $variables are literal, not shell expansions
+QUERY_COMMENT_DATABASE_ID='
+query($id: ID!) {
+  node(id: $id) {
+    ... on PullRequestReviewComment { databaseId }
+  }
+}'
+
+# shellcheck disable=SC2016  # GraphQL $variables are literal, not shell expansions
+MUTATION_RESOLVE_THREAD='
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}'
+
+usage() {
+  cat <<'EOF'
+Usage: gh pr-threads <command> [args]
+
+Commands:
+  list <owner> <repo> <pr> [--all]
+      List review threads as JSON. Unresolved only unless --all.
+  reply <owner> <repo> <pr> --in-reply-to <comment-id>
+        (--body <text> | --body-file <path | ->) [--resolve-thread <thread-id>]
+      Reply to a review comment. <comment-id> is the numeric databaseId (from
+      `list`) or a PRRC_... GraphQL node id. --resolve-thread optionally
+      resolves the thread (PRRT_... id) in the same call.
+  resolve <thread-id>
+      Resolve a review thread by its PRRT_... GraphQL node id. Prints
+      {"threadId": ..., "isResolved": true} on success.
+EOF
+}
+
+die() {
+  echo "gh pr-threads: $*" >&2
+  exit 1
+}
+
+require_deps() {
+  command -v gh >/dev/null 2>&1 || die "gh is required but not on PATH"
+  command -v jq >/dev/null 2>&1 || die "jq is required but not on PATH"
+}
+
+# gh api graphql with error handling: fails on transport errors (gh exits
+# non-zero) and on GraphQL-level errors (200 response with .errors and no data).
+graphql() {
+  local response
+  if ! response="$(gh api graphql "$@" 2>&1)"; then
+    die "gh api graphql failed: ${response}"
+  fi
+  if [ "$(jq -r 'has("errors") and (.data == null)' <<<"$response")" = "true" ]; then
+    die "GraphQL error: $(jq -c '.errors' <<<"$response")"
+  fi
+  printf '%s' "$response"
+}
+
+is_prrc_node_id() {
+  [[ $1 == PRRC_* ]]
+}
+
+# Accepts a numeric databaseId or a PRRC_ node id; prints the numeric id.
+comment_database_id() {
+  local id="$1"
+  if is_prrc_node_id "$id"; then
+    local response
+    response="$(graphql -f query="$QUERY_COMMENT_DATABASE_ID" -f id="$id")"
+    local numeric
+    numeric="$(jq -r '.data.node.databaseId // empty' <<<"$response")"
+    [ -n "$numeric" ] || die "no PullRequestReviewComment found for node id $id"
+    printf '%s' "$numeric"
+  else
+    [[ $id =~ ^[0-9]+$ ]] || die "comment id must be numeric or a PRRC_... node id, got: $id"
+    printf '%s' "$id"
+  fi
+}
+
+cmd_list() {
+  local owner="$1" repo="$2" pr="$3"
+  shift 3
+  local all=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all) all=true ;;
+      *) die "list: unknown argument: $1" ;;
+    esac
+    shift
+  done
+
+  local response
+  response="$(graphql -f query="$QUERY_REVIEW_THREADS" -F owner="$owner" -F repo="$repo" -F pr="$pr")"
+
+  jq --argjson all "$all" '
+    .data.repository.pullRequest as $pr
+    | ($pr.reviewThreads.nodes | map(select(.isResolved == false))) as $unresolved
+    | {
+        prUrl: $pr.url,
+        unresolvedCount: ($unresolved | length),
+        threads: (if $all then $pr.reviewThreads.nodes else $unresolved end
+          | map({
+              id: .id,
+              isResolved: .isResolved,
+              isOutdated: .isOutdated,
+              path: .path,
+              line: .line,
+              startLine: .startLine,
+              comments: (.comments.nodes | map({
+                id: .id,
+                databaseId: .databaseId,
+                author: (.author.login // "ghost"),
+                authorIsBot: (.author.__typename == "Bot"),
+                body: .body,
+                createdAt: .createdAt,
+                url: .url
+              }))
+            }))
+      }' <<<"$response"
+}
+
+cmd_reply() {
+  local owner="$1" repo="$2" pr="$3"
+  shift 3
+  local in_reply_to="" body="" body_file="" resolve_thread=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --in-reply-to)
+        [ $# -ge 2 ] || die "reply: --in-reply-to requires a value"
+        in_reply_to="$2"; shift 2 ;;
+      --in-reply-to=*) in_reply_to="${1#*=}"; shift ;;
+      --body)
+        [ $# -ge 2 ] || die "reply: --body requires a value"
+        body="$2"; shift 2 ;;
+      --body=*) body="${1#*=}"; shift ;;
+      --body-file)
+        [ $# -ge 2 ] || die "reply: --body-file requires a value"
+        body_file="$2"; shift 2 ;;
+      --body-file=*) body_file="${1#*=}"; shift ;;
+      --resolve-thread)
+        [ $# -ge 2 ] || die "reply: --resolve-thread requires a value"
+        resolve_thread="$2"; shift 2 ;;
+      --resolve-thread=*) resolve_thread="${1#*=}"; shift ;;
+      *) die "reply: unknown argument: $1" ;;
+    esac
+  done
+
+  [ -n "$in_reply_to" ] || die "reply: --in-reply-to is required"
+  if [ -n "$body" ] && [ -n "$body_file" ]; then
+    die "reply: --body and --body-file are mutually exclusive"
+  fi
+  if [ -z "$body" ] && [ -z "$body_file" ]; then
+    die "reply: exactly one of --body or --body-file is required"
+  fi
+  if [ "$body_file" = "-" ]; then
+    body="$(cat)"
+  elif [ -n "$body_file" ]; then
+    [ -f "$body_file" ] || die "reply: body file not found: $body_file"
+    body="$(cat "$body_file")"
+  fi
+  [ -n "$body" ] || die "reply: reply body is empty"
+
+  local numeric_id
+  numeric_id="$(comment_database_id "$in_reply_to")"
+
+  local response
+  if ! response="$(gh api "repos/$owner/$repo/pulls/$pr/comments" \
+      -f body="$body" -F in_reply_to="$numeric_id" 2>&1)"; then
+    die "posting reply failed: ${response}"
+  fi
+
+  jq -c '{commentId: .id, nodeId: .node_id, url: .html_url}' <<<"$response"
+
+  if [ -n "$resolve_thread" ]; then
+    cmd_resolve "$resolve_thread"
+  fi
+}
+
+cmd_resolve() {
+  local thread_id="$1"
+  [[ $thread_id == PRRT_* ]] || die "resolve: thread id must be a PRRT_... GraphQL node id, got: $thread_id"
+
+  local response
+  response="$(graphql -f query="$MUTATION_RESOLVE_THREAD" -f threadId="$thread_id")"
+  jq -c '{threadId: .data.resolveReviewThread.thread.id,
+          isResolved: .data.resolveReviewThread.thread.isResolved}' <<<"$response"
+}
+
+main() {
+  require_deps
+  [ $# -ge 1 ] || { usage >&2; exit 1; }
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    help|--help|-h) usage ;;
+    list)
+      [ $# -ge 3 ] || { usage >&2; die "list requires <owner> <repo> <pr>"; }
+      cmd_list "$@" ;;
+    reply)
+      [ $# -ge 3 ] || { usage >&2; die "reply requires <owner> <repo> <pr> and options"; }
+      cmd_reply "$@" ;;
+    resolve)
+      [ $# -eq 1 ] || { usage >&2; die "resolve requires <thread-id>"; }
+      cmd_resolve "$@" ;;
+    *) usage >&2; die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"
