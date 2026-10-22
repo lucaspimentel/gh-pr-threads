@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # gh-pr-threads: a gh extension for PR review threads.
 #
-# Wraps the three gh api calls pi's address-pr-comments skill needs so they can
+# Wraps the gh api calls pi's address-pr-comments skill needs so they can
 # be allow-listed narrowly by permission systems (e.g. pi-tool-permissions)
 # instead of allowing raw `gh api`:
 #
 #   gh pr-threads list   <owner> <repo> <pr> [--all]
 #   gh pr-threads reply  <owner> <repo> <pr> --in-reply-to <id> (--body <text> | --body-file <path>) [--resolve-thread <id>]
 #   gh pr-threads resolve <thread-id>
+#   gh pr-threads submit-review <owner> <repo> <pr> --event COMMENT|APPROVE|REQUEST_CHANGES [--body <text> | --body-file <path | ->]
 #
 # `list` fetches review threads (unresolved only unless --all) and includes the
 # numeric databaseId of every comment, so callers never need the PRRC_ node-id
@@ -76,6 +77,13 @@ Commands:
   resolve <thread-id>
       Resolve a review thread by its PRRT_... GraphQL node id. Prints
       {"threadId": ..., "isResolved": true} on success.
+  submit-review <owner> <repo> <pr> --event COMMENT|APPROVE|REQUEST_CHANGES
+                [--body <text> | --body-file <path | ->]
+      Create and submit a new pull request review (this does not submit an
+      existing pending review by id). --event is required. --body is required
+      for COMMENT and REQUEST_CHANGES and optional for APPROVE; an empty body
+      is always rejected. Line comments (the `comments` array) and commit_id
+      are not supported.
 EOF
 }
 
@@ -231,6 +239,70 @@ cmd_resolve() {
           isResolved: .data.resolveReviewThread.thread.isResolved}' <<<"$response"
 }
 
+cmd_submit_review() {
+  local owner="$1" repo="$2" pr="$3"
+  shift 3
+  local event="" body="" body_file=""
+  local event_supplied=false body_supplied=false body_file_supplied=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --event)
+        [ $# -ge 2 ] || die "submit-review: --event requires a value"
+        event="$2"; event_supplied=true; shift 2 ;;
+      --event=*) event="${1#*=}"; event_supplied=true; shift ;;
+      --body)
+        [ $# -ge 2 ] || die "submit-review: --body requires a value"
+        body="$2"; body_supplied=true; shift 2 ;;
+      --body=*) body="${1#*=}"; body_supplied=true; shift ;;
+      --body-file)
+        [ $# -ge 2 ] || die "submit-review: --body-file requires a value"
+        body_file="$2"; body_file_supplied=true; shift 2 ;;
+      --body-file=*) body_file="${1#*=}"; body_file_supplied=true; shift ;;
+      *) die "submit-review: unknown argument: $1" ;;
+    esac
+  done
+
+  [ "$event_supplied" = true ] || die "submit-review: --event is required"
+  event="$(printf '%s' "$event" | tr '[:lower:]' '[:upper:]')"
+  case "$event" in
+    COMMENT|APPROVE|REQUEST_CHANGES) ;;
+    *) die "submit-review: --event must be COMMENT, APPROVE, or REQUEST_CHANGES, got: $event" ;;
+  esac
+
+  if [ "$body_supplied" = true ] && [ "$body_file_supplied" = true ]; then
+    die "submit-review: --body and --body-file are mutually exclusive"
+  fi
+  if [ "$body_supplied" = false ] && [ "$body_file_supplied" = false ] \
+      && [ "$event" != "APPROVE" ]; then
+    die "submit-review: exactly one of --body or --body-file is required (body is optional only for APPROVE)"
+  fi
+
+  if [ "$body_file_supplied" = true ]; then
+    if [ "$body_file" = "-" ]; then
+      body="$(cat)"
+    else
+      [ -f "$body_file" ] && [ -r "$body_file" ] \
+        || die "submit-review: body file not readable: $body_file"
+      body="$(cat "$body_file")"
+    fi
+  fi
+  if [ "$body_supplied" = true ] || [ "$body_file_supplied" = true ]; then
+    [ -n "$body" ] || die "submit-review: body must not be empty"
+  fi
+
+  local api_args=("repos/$owner/$repo/pulls/$pr/reviews" -f event="$event")
+  if [ "$body_supplied" = true ] || [ "$body_file_supplied" = true ]; then
+    api_args+=(-f body="$body")
+  fi
+
+  local response
+  if ! response="$(gh api "${api_args[@]}" 2>&1)"; then
+    die "submitting review failed: ${response}"
+  fi
+
+  jq -c '{reviewId: .id, state: .state, url: .html_url, submittedAt: .submitted_at}' <<<"$response"
+}
+
 main() {
   require_deps
   [ $# -ge 1 ] || { usage >&2; exit 1; }
@@ -248,6 +320,9 @@ main() {
     resolve)
       [ $# -eq 1 ] || { usage >&2; die "resolve requires <thread-id>"; }
       cmd_resolve "$@" ;;
+    submit-review)
+      [ $# -ge 3 ] || { usage >&2; die "submit-review requires <owner> <repo> <pr> and options"; }
+      cmd_submit_review "$@" ;;
     *) usage >&2; die "unknown command: $cmd" ;;
   esac
 }

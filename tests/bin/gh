@@ -43,5 +43,20 @@ if jq -e 'any(.[]; test("pulls/.*/comments$"))' >/dev/null 2>&1 <<<"$args_json";
   exit 0
 fi
 
+if jq -e 'any(.[]; test("pulls/.*/reviews$"))' >/dev/null 2>&1 <<<"$args_json"; then
+  if [ "${STUB_REVIEW_FAIL:-0}" = "1" ]; then
+    echo "stub gh: simulated review submission failure" >&2
+    exit 1
+  fi
+  state="COMMENTED"
+  if jq -e 'any(.[]; contains("event=APPROVE"))' >/dev/null 2>&1 <<<"$args_json"; then
+    state="APPROVED"
+  elif jq -e 'any(.[]; contains("event=REQUEST_CHANGES"))' >/dev/null 2>&1 <<<"$args_json"; then
+    state="CHANGES_REQUESTED"
+  fi
+  printf '{"id": 5001, "node_id": "PRR_new1", "state": "%s", "html_url": "https://github.com/o/r/pull/1#pullrequestreview-5001", "submitted_at": "2026-10-22T12:00:00Z"}\n' "$state"
+  exit 0
+fi
+
 echo "stub gh: no fixture for args: $args_json" >&2
 exit 1

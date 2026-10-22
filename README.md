@@ -1,14 +1,14 @@
 # gh-pr-threads
 
 A [gh CLI extension](https://cli.github.com/manual/gh_extension) for PR review
-threads: list them, reply to them, and resolve them, without hand-writing
-GraphQL in shell one-liners.
+threads: list them, reply to them, resolve them, and submit reviews, without
+hand-writing GraphQL in shell one-liners.
 
-Wraps the three `gh api` calls the
+Wraps the `gh api` calls the
 [address-pr-comments](https://github.com/lucaspimentel/pi-extensions) skill
-needs so they can be allow-listed narrowly by permission systems (e.g. pi's
-`pi-tool-permissions`) instead of allowing raw `gh api`, and so the steps are
-repeatable and testable.
+needs (including the pull request reviews POST) so they can be allow-listed
+narrowly by permission systems (e.g. pi's `pi-tool-permissions`) instead of
+allowing raw `gh api`, and so the steps are repeatable and testable.
 
 ## Install
 
@@ -89,15 +89,42 @@ gh pr-threads resolve <thread-id>
 Resolves a review thread by its `PRRT_...` GraphQL node id and prints
 `{"threadId":"...","isResolved":true}`.
 
+### `submit-review`
+
+```sh
+gh pr-threads submit-review <owner> <repo> <pr> --event COMMENT|APPROVE|REQUEST_CHANGES \
+  [--body <text> | --body-file <path | ->]
+```
+
+Creates and submits a *new* pull request review; it does not submit an
+existing pending review by id. `--event` is required: without it GitHub would
+leave a pending draft review, so the command refuses to guess. `--body` is
+required for `COMMENT` and `REQUEST_CHANGES` and optional for `APPROVE`; an
+explicitly empty body (`--body ""` or an empty `--body-file`) is always
+rejected. When no body is given (valid only for `APPROVE`), no `body` field
+is sent at all. `--body-file -` reads the body from stdin.
+
+Line comments (the `comments` array) and `commit_id` are deliberately not
+supported to keep the surface minimal.
+
+Prints one JSON object for the submitted review:
+
+```json
+{"reviewId":5001,"state":"APPROVED","url":"https://github.com/o/r/pull/1#pullrequestreview-5001","submittedAt":"2026-10-22T12:00:00Z"}
+```
+
 ## Permissions (pi-tool-permissions)
 
-`list` is read-only and safe to allow silently; `reply` and `resolve` are
-writes and should stay on the ask path:
+`list` is read-only and safe to allow silently; `reply`, `resolve`, and
+`submit-review` are writes and should stay on the ask path. `submit-review`
+can APPROVE a pull request, the most powerful write in the set, which is why
+it stays on the ask path:
 
 ```json
 {
   "allow": ["Bash(gh pr-threads list *)"],
-  "ask":   ["Bash(gh pr-threads reply *)", "Bash(gh pr-threads resolve *)"]
+  "ask":   ["Bash(gh pr-threads reply *)", "Bash(gh pr-threads resolve *)",
+            "Bash(gh pr-threads submit-review *)"]
 }
 ```
 
