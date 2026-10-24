@@ -104,16 +104,16 @@ run 0 reply o r 7 --in-reply-to 111 --body "Fixed. Added a guard."
 out="$RUN_OUT"
 t "reply: comment id" "9001" "$(jqq "$out" '.commentId')"
 t "reply: url present" "https://github.com/o/r/pull/1#discussioncomment-9001" "$(jqq "$out" '.url')"
-t "reply: one gh call (no resolve)" "1" "$(wc -l <"$RUN_LOG")"
+t "reply: one gh call (no resolve)" "1" "$(wc -l <"$RUN_LOG" | tr -d '[:space:]')"
 check_log "reply: in_reply_to forwarded" "in_reply_to=111"
 
 run 0 reply o r 7 --in-reply-to PRRC_c1 --body-file - <<<"converted body"
-t "reply PRRC_: lookup + post = 2 gh calls" "2" "$(wc -l <"$RUN_LOG")"
+t "reply PRRC_: lookup + post = 2 gh calls" "2" "$(wc -l <"$RUN_LOG" | tr -d '[:space:]')"
 check_log "reply PRRC_: converted to 4242" "in_reply_to=4242"
 check_log "reply: stdin body forwarded" "body=converted body"
 
 run 0 reply o r 7 --in-reply-to 111 --body "done" --resolve-thread PRRT_thread1
-t "reply --resolve-thread: post + resolve = 2 gh calls" "2" "$(wc -l <"$RUN_LOG")"
+t "reply --resolve-thread: post + resolve = 2 gh calls" "2" "$(wc -l <"$RUN_LOG" | tr -d '[:space:]')"
 t "reply --resolve-thread: resolve json emitted" "true" "$(jqq "$RUN_OUT" '.isResolved' | tail -1)"
 
 run 1 reply o r 7 --in-reply-to 111 --body-file /nonexistent/file
@@ -202,7 +202,7 @@ fail_before_call() { # fail_before_call <name> <args...>
   local name="$1"
   shift
   run 1 "$@"
-  t "submit-review $name: no gh call made" "0" "$(wc -l <"$RUN_LOG")"
+  t "submit-review $name: no gh call made" "0" "$(wc -l <"$RUN_LOG" | tr -d '[:space:]')"
 }
 
 fail_before_call "missing event" submit-review o r 7 --body x
